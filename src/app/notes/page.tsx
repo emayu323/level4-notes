@@ -1,87 +1,74 @@
-'use client'
-import { useEffect, useState, FormEvent } from 'react'
-import { auth, db } from '@/lib/firebase'
+'use client';
+import { useEffect, useMemo, useState, FormEvent } from 'react';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import {
   addDoc, collection, deleteDoc, doc,
-  getDocs, orderBy, query, serverTimestamp, where
-} from 'firebase/firestore'
-import { onAuthStateChanged, User } from 'firebase/auth'
-import Link from 'next/link'
+  onSnapshot, orderBy, query, serverTimestamp, where, getFirestore
+} from 'firebase/firestore';
+import { db } from '@/lib/firebase';
 
 type Note = {
-  id: string
-  text: string
-  userId: string
-  createdAt?: { seconds: number; nanoseconds: number } | null
-}
+  id: string;
+  text: string;
+  createdAt?: { seconds: number; nanoseconds: number } | null;
+  userId: string;
+};
 
 export default function NotesPage() {
-  const [user, setUser] = useState<User | null>(null)
-  const [notes, setNotes] = useState<Note[]>([])
-  const [text, setText] = useState('')
-  const [loading, setLoading] = useState(true)
-  const colRef = collection(db, 'notes')
+  const [uid, setUid] = useState<string | null>(null);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [text, setText] = useState('');
+  const [loading, setLoading] = useState(true);
+  const colRef = useMemo(() => collection(db, 'notes'), []);
 
-  // サインイン状態を待つ
+  // ログイン状態を監視して、uid をセット
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => {
-      setUser(u ?? null)
-      setLoading(false)
-    })
-    return () => unsub()
-  }, [])
+    const auth = getAuth();
+    const off = onAuthStateChanged(auth, (user) => {
+      setUid(user ? user.uid : null);
+    });
+    return () => off();
+  }, []);
 
-  async function loadNotes(uid: string) {
-    setLoading(true)
-    try {
-      const q = query(
-        colRef,
-        where('userId', '==', uid),
-        orderBy('createdAt', 'desc'),
-      )
-      const snap = await getDocs(q)
-      const list: Note[] = snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Note, 'id'>) }))
-      setNotes(list)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // ログインが決まったら読み込み
+  // uid が取れてから購読開始
   useEffect(() => {
-    if (user?.uid) void loadNotes(user.uid)
-  }, [user])
+    if (!uid) { setLoading(false); setNotes([]); return; }
 
-  async function onSubmit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault()
-    if (!user?.uid) return alert('先に /auth でログインしてください')
-    if (!text.trim()) return
+    const q = query(
+      colRef,
+      where('userId', '==', uid),
+      orderBy('createdAt', 'desc')
+    );
+
+    const unsub = onSnapshot(q, (snap) => {
+      const list: Note[] = snap.docs.map(d => ({ id: d.id, ...(d.data() as Omit<Note, 'id'>) }));
+      setNotes(list);
+      setLoading(false);
+    }, (err) => {
+      console.error(err);
+      setLoading(false);
+    });
+
+    return () => unsub();
+  }, [uid, colRef]);
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!uid) { alert('まず /auth でログインしてください'); return; }
+    const value = text.trim();
+    if (!value) return;
+
     await addDoc(colRef, {
-      text: text.trim(),
-      userId: user.uid,
+      text: value,
+      userId: uid,
       createdAt: serverTimestamp(),
-    })
-    setText('')
-    await loadNotes(user.uid)
+    });
+    setText('');
+    // onSnapshot が拾うのでリロード不要
   }
 
   async function onDelete(id: string) {
-    if (!user?.uid) return
-    await deleteDoc(doc(db, 'notes', id))
-    await loadNotes(user.uid)
-  }
-
-  if (loading) {
-    return <main className="max-w-xl mx-auto p-6">読み込み中…</main>
-  }
-
-  if (!user) {
-    return (
-      <main className="max-w-xl mx-auto p-6 space-y-4">
-        <h1 className="text-xl font-bold">メモ</h1>
-        <p className="text-red-500">まず <Link href="/auth" className="underline">/auth</Link> でログインしてください。</p>
-      </main>
-    )
+    await deleteDoc(doc(db, 'notes', id));
   }
 
   return (
@@ -100,21 +87,22 @@ export default function NotesPage() {
         </button>
       </form>
 
+      {!uid && <p className="text-sm text-gray-500">まず <a href="/auth" className="underline">/auth</a> でログインしてください。</p>}
+
       {loading ? (
         <p>読み込み中…</p>
+      ) : notes.length === 0 ? (
+        <p className="text-sm text-gray-500">メモはまだありません</p>
       ) : (
         <ul className="space-y-2">
           {notes.map(n => (
             <li key={n.id} className="border rounded px-3 py-2 flex justify-between">
               <span>{n.text}</span>
-              <button onClick={() => onDelete(n.id)} className="text-sm text-red-600">
-                削除
-              </button>
+              <button onClick={() => onDelete(n.id)} className="text-sm text-red-600">削除</button>
             </li>
           ))}
-          {notes.length === 0 && <li className="text-sm text-gray-500">メモはまだありません</li>}
         </ul>
       )}
     </main>
-  )
+  );
 }
